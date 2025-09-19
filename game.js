@@ -31,6 +31,10 @@ class GameClient {
             right: false
         };
         
+        // Movement interval for continuous movement
+        this.movementInterval = null;
+        this.movementTimeout = null;
+        
         this.setupCanvas();
         this.setupKeyboard();
         this.render(); // Show loading screen immediately
@@ -73,38 +77,36 @@ class GameClient {
         // Only handle movement if we're connected and have a player ID
         if (!this.isConnected || !this.myPlayerId) return;
         
-        let direction = null;
         let keyName = null;
         
         switch (event.code) {
             case 'ArrowUp':
-                direction = 'up';
                 keyName = 'up';
                 break;
             case 'ArrowDown':
-                direction = 'down';
                 keyName = 'down';
                 break;
             case 'ArrowLeft':
-                direction = 'left';
                 keyName = 'left';
                 break;
             case 'ArrowRight':
-                direction = 'right';
                 keyName = 'right';
                 break;
             default:
                 return; // Not an arrow key
         }
         
-        // If this key is already pressed, don't send another command
+        // If this key is already pressed, don't do anything
         if (this.keyState[keyName]) return;
         
         // Update key state
         this.keyState[keyName] = true;
         
-        // Send move command
-        this.sendMoveCommand(direction);
+        // Send immediate move command for single press
+        this.sendMoveCommandForActiveKeys();
+        
+        // Start continuous movement after a short delay
+        this.startContinuousMovement();
     }
     
     handleKeyUp(event) {
@@ -134,11 +136,11 @@ class GameClient {
         const anyKeyPressed = this.keyState.up || this.keyState.down || this.keyState.left || this.keyState.right;
         
         if (!anyKeyPressed) {
-            // No keys pressed, send stop command
-            this.sendStopCommand();
+            // No keys pressed, stop continuous movement
+            this.stopContinuousMovement();
         } else {
-            // Other keys still pressed, send move command for the next priority key
-            this.sendMoveCommandForActiveKeys();
+            // Other keys still pressed, update continuous movement direction
+            this.startContinuousMovement();
         }
     }
     
@@ -163,6 +165,42 @@ class GameClient {
         
         this.socket.send(JSON.stringify(message));
         console.log('Sent stop command');
+    }
+    
+    startContinuousMovement() {
+        // Clear any existing movement interval and timeout
+        if (this.movementInterval) {
+            clearInterval(this.movementInterval);
+        }
+        if (this.movementTimeout) {
+            clearTimeout(this.movementTimeout);
+        }
+        
+        // Start continuous movement after a short delay (for press-and-hold)
+        this.movementTimeout = setTimeout(() => {
+            // Only start continuous movement if keys are still pressed
+            const anyKeyPressed = this.keyState.up || this.keyState.down || this.keyState.left || this.keyState.right;
+            if (anyKeyPressed) {
+                this.movementInterval = setInterval(() => {
+                    this.sendMoveCommandForActiveKeys();
+                }, 100); // Send move command every 100ms
+            }
+        }, 200); // 200ms delay before starting continuous movement
+    }
+    
+    stopContinuousMovement() {
+        // Clear the movement interval and timeout
+        if (this.movementInterval) {
+            clearInterval(this.movementInterval);
+            this.movementInterval = null;
+        }
+        if (this.movementTimeout) {
+            clearTimeout(this.movementTimeout);
+            this.movementTimeout = null;
+        }
+        
+        // Send stop command
+        this.sendStopCommand();
     }
     
     sendMoveCommandForActiveKeys() {
@@ -357,6 +395,9 @@ class GameClient {
         
         // Draw all players
         this.drawPlayers();
+        
+        // Draw UI overlay
+        this.drawUI();
     }
     
     drawLoadingScreen() {
@@ -430,8 +471,20 @@ class GameClient {
         // Avatar size (adjust as needed)
         const avatarSize = 32;
         
+        // Check if this is my avatar
+        const isMyAvatar = player.id === this.myPlayerId;
+        
         // Save context state
         this.ctx.save();
+        
+        // Draw green circle around my avatar
+        if (isMyAvatar) {
+            this.ctx.strokeStyle = '#00ff00';
+            this.ctx.lineWidth = 3;
+            this.ctx.beginPath();
+            this.ctx.arc(screenX, screenY - avatarSize/2, avatarSize/2 + 5, 0, 2 * Math.PI);
+            this.ctx.stroke();
+        }
         
         // Apply horizontal flip for west direction
         if (flipX) {
@@ -443,19 +496,72 @@ class GameClient {
         
         // Draw username label
         this.ctx.restore();
-        this.ctx.fillStyle = 'white';
+        
+        // Set text color based on whether it's my avatar
+        this.ctx.fillStyle = isMyAvatar ? '#00ff00' : 'white';
         this.ctx.strokeStyle = 'black';
         this.ctx.lineWidth = 2;
         this.ctx.font = '12px Arial';
         this.ctx.textAlign = 'center';
         
         const textX = screenX;
-        const textY = screenY - avatarSize - 5;
+        const textY = isMyAvatar ? screenY + 10 : screenY - avatarSize - 5;
         
         // Draw text outline
         this.ctx.strokeText(player.username, textX, textY);
         // Draw text fill
         this.ctx.fillText(player.username, textX, textY);
+    }
+    
+    drawUI() {
+        // Save context state
+        this.ctx.save();
+        
+        // Set up text styling
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        this.ctx.strokeStyle = 'white';
+        this.ctx.lineWidth = 1;
+        this.ctx.font = '14px Arial';
+        this.ctx.textAlign = 'left';
+        
+        // Connection status
+        const connectionStatus = this.isConnected ? 'Connected' : 'Disconnected';
+        const connectionColor = this.isConnected ? '#00ff00' : '#ff0000';
+        
+        // Player count
+        const playerCount = this.players.size;
+        
+        // My player coordinates
+        let coordinates = '';
+        if (this.myPlayerId && this.players.has(this.myPlayerId)) {
+            const myPlayer = this.players.get(this.myPlayerId);
+            coordinates = `(${Math.round(myPlayer.x)}, ${Math.round(myPlayer.y)})`;
+        }
+        
+        // UI panel background
+        const panelWidth = 250;
+        const panelHeight = 100;
+        const margin = 10;
+        
+        this.ctx.fillRect(margin, margin, panelWidth, panelHeight);
+        this.ctx.strokeRect(margin, margin, panelWidth, panelHeight);
+        
+        // Connection status in green
+        this.ctx.fillStyle = connectionColor;
+        this.ctx.fillText('Connected', margin + 10, margin + 20);
+        
+        // Player count
+        this.ctx.fillStyle = 'white';
+        this.ctx.fillText(`Players: ${playerCount}`, margin + 10, margin + 40);
+        
+        // Position coordinates
+        this.ctx.fillText(`Position: ${coordinates}`, margin + 10, margin + 60);
+        
+        // Commands hint
+        this.ctx.fillText('Press Enter For commands', margin + 10, margin + 80);
+        
+        // Restore context state
+        this.ctx.restore();
     }
 }
 
