@@ -23,7 +23,16 @@ class GameClient {
         this.socket = null;
         this.isConnected = false;
         
+        // Keyboard state
+        this.keyState = {
+            up: false,
+            down: false,
+            left: false,
+            right: false
+        };
+        
         this.setupCanvas();
+        this.setupKeyboard();
         this.render(); // Show loading screen immediately
         this.loadWorldMap();
         this.connectToServer();
@@ -47,6 +56,126 @@ class GameClient {
             this.updateViewport();
             this.render();
         });
+    }
+    
+    setupKeyboard() {
+        // Add keyboard event listeners
+        document.addEventListener('keydown', (event) => this.handleKeyDown(event));
+        document.addEventListener('keyup', (event) => this.handleKeyUp(event));
+    }
+    
+    handleKeyDown(event) {
+        // Prevent default browser behavior for arrow keys
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
+            event.preventDefault();
+        }
+        
+        // Only handle movement if we're connected and have a player ID
+        if (!this.isConnected || !this.myPlayerId) return;
+        
+        let direction = null;
+        let keyName = null;
+        
+        switch (event.code) {
+            case 'ArrowUp':
+                direction = 'up';
+                keyName = 'up';
+                break;
+            case 'ArrowDown':
+                direction = 'down';
+                keyName = 'down';
+                break;
+            case 'ArrowLeft':
+                direction = 'left';
+                keyName = 'left';
+                break;
+            case 'ArrowRight':
+                direction = 'right';
+                keyName = 'right';
+                break;
+            default:
+                return; // Not an arrow key
+        }
+        
+        // If this key is already pressed, don't send another command
+        if (this.keyState[keyName]) return;
+        
+        // Update key state
+        this.keyState[keyName] = true;
+        
+        // Send move command
+        this.sendMoveCommand(direction);
+    }
+    
+    handleKeyUp(event) {
+        let keyName = null;
+        
+        switch (event.code) {
+            case 'ArrowUp':
+                keyName = 'up';
+                break;
+            case 'ArrowDown':
+                keyName = 'down';
+                break;
+            case 'ArrowLeft':
+                keyName = 'left';
+                break;
+            case 'ArrowRight':
+                keyName = 'right';
+                break;
+            default:
+                return; // Not an arrow key
+        }
+        
+        // Update key state
+        this.keyState[keyName] = false;
+        
+        // Check if any movement keys are still pressed
+        const anyKeyPressed = this.keyState.up || this.keyState.down || this.keyState.left || this.keyState.right;
+        
+        if (!anyKeyPressed) {
+            // No keys pressed, send stop command
+            this.sendStopCommand();
+        } else {
+            // Other keys still pressed, send move command for the next priority key
+            this.sendMoveCommandForActiveKeys();
+        }
+    }
+    
+    sendMoveCommand(direction) {
+        if (!this.isConnected) return;
+        
+        const message = {
+            action: 'move',
+            direction: direction
+        };
+        
+        this.socket.send(JSON.stringify(message));
+        console.log('Sent move command:', direction);
+    }
+    
+    sendStopCommand() {
+        if (!this.isConnected) return;
+        
+        const message = {
+            action: 'stop'
+        };
+        
+        this.socket.send(JSON.stringify(message));
+        console.log('Sent stop command');
+    }
+    
+    sendMoveCommandForActiveKeys() {
+        // Priority order: up > down > left > right
+        if (this.keyState.up) {
+            this.sendMoveCommand('up');
+        } else if (this.keyState.down) {
+            this.sendMoveCommand('down');
+        } else if (this.keyState.left) {
+            this.sendMoveCommand('left');
+        } else if (this.keyState.right) {
+            this.sendMoveCommand('right');
+        }
     }
     
     loadWorldMap() {
