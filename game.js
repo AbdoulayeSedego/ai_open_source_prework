@@ -35,11 +35,40 @@ class GameClient {
         this.movementInterval = null;
         this.movementTimeout = null;
         
+        
+        // Player interaction
+        this.hoveredPlayer = null;
+        this.followingPlayer = null;
+        
+        // Visual enhancements
+        this.miniMapSize = 150;
+        this.particles = [];
+        
+        // UI state
+        this.showSettings = false;
+        this.showPlayerList = false;
+        this.stats = {
+            distanceTraveled: 0,
+            playTime: 0,
+            startTime: Date.now()
+        };
+        
+        // Settings
+        this.settings = {
+            showMiniMap: true,
+            showParticles: true,
+            particleIntensity: 1
+        };
+        
         this.setupCanvas();
         this.setupKeyboard();
+        this.setupMouse();
         this.render(); // Show loading screen immediately
         this.loadWorldMap();
         this.connectToServer();
+        
+        // Start game loop
+        this.startGameLoop();
     }
     
     setupCanvas() {
@@ -68,10 +97,37 @@ class GameClient {
         document.addEventListener('keyup', (event) => this.handleKeyUp(event));
     }
     
+    setupMouse() {
+        // Add mouse event listeners
+        this.canvas.addEventListener('mousemove', (event) => this.handleMouseMove(event));
+        this.canvas.addEventListener('contextmenu', (event) => this.handleRightClick(event));
+    }
+    
+    startGameLoop() {
+        const gameLoop = () => {
+            this.update();
+            requestAnimationFrame(gameLoop);
+        };
+        gameLoop();
+    }
+    
     handleKeyDown(event) {
         // Prevent default browser behavior for arrow keys
         if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
             event.preventDefault();
+        }
+        
+        // Handle UI shortcuts first
+        switch (event.code) {
+            case 'KeyS':
+                this.toggleSettings();
+                return;
+            case 'KeyP':
+                this.togglePlayerList();
+                return;
+            case 'Enter':
+                console.log('Command interface - press Enter for commands');
+                return;
         }
         
         // Only handle movement if we're connected and have a player ID
@@ -147,13 +203,26 @@ class GameClient {
     sendMoveCommand(direction) {
         if (!this.isConnected) return;
         
-        const message = {
-            action: 'move',
-            direction: direction
-        };
+        let message;
+        if (typeof direction === 'string') {
+            // Direction-based movement
+            message = {
+                action: 'move',
+                direction: direction
+            };
+        } else if (typeof direction === 'object' && direction.x !== undefined && direction.y !== undefined) {
+            // Coordinate-based movement (click-to-move)
+            message = {
+                action: 'move',
+                x: direction.x,
+                y: direction.y
+            };
+        } else {
+            return;
+        }
         
         this.socket.send(JSON.stringify(message));
-        console.log('Sent move command:', direction);
+        console.log('Sent move command:', message);
     }
     
     sendStopCommand() {
@@ -396,8 +465,25 @@ class GameClient {
         // Draw all players
         this.drawPlayers();
         
+        // Draw particles
+        this.drawParticles();
+        
+        // Draw mini-map
+        this.drawMiniMap();
+        
         // Draw UI overlay
         this.drawUI();
+        
+        // Draw settings panel
+        this.drawSettings();
+        
+        // Draw player list
+        this.drawPlayerList();
+        
+        // Draw hover info
+        if (this.hoveredPlayer) {
+            this.drawHoverInfo(this.hoveredPlayer);
+        }
     }
     
     drawLoadingScreen() {
@@ -562,6 +648,355 @@ class GameClient {
         
         // Restore context state
         this.ctx.restore();
+    }
+    
+    // Mouse event handlers
+    
+    handleMouseMove(event) {
+        const rect = this.canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        
+        // Convert screen coordinates to world coordinates
+        const worldX = x + this.viewport.offsetX;
+        const worldY = y + this.viewport.offsetY;
+        
+        // Check for player hover
+        this.hoveredPlayer = this.getPlayerAtPosition(worldX, worldY);
+    }
+    
+    handleRightClick(event) {
+        event.preventDefault();
+        
+        if (!this.isConnected || !this.myPlayerId) return;
+        
+        const rect = this.canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        
+        // Convert screen coordinates to world coordinates
+        const worldX = x + this.viewport.offsetX;
+        const worldY = y + this.viewport.offsetY;
+        
+        // Check if right-clicking on a player
+        const clickedPlayer = this.getPlayerAtPosition(worldX, worldY);
+        if (clickedPlayer && clickedPlayer.id !== this.myPlayerId) {
+            // Teleport near the player
+            const teleportX = clickedPlayer.x + (Math.random() - 0.5) * 100;
+            const teleportY = clickedPlayer.y + (Math.random() - 0.5) * 100;
+            
+            this.sendMoveCommand({ x: teleportX, y: teleportY });
+        }
+    }
+    
+    
+    getPlayerAtPosition(x, y) {
+        for (const [playerId, player] of this.players) {
+            const distance = Math.sqrt((player.x - x) ** 2 + (player.y - y) ** 2);
+            if (distance < 50) { // 50 pixel radius for player interaction
+                return player;
+            }
+        }
+        return null;
+    }
+    
+    // UI toggle methods
+    toggleSettings() {
+        this.showSettings = !this.showSettings;
+        this.render();
+    }
+    
+    togglePlayerList() {
+        this.showPlayerList = !this.showPlayerList;
+        this.render();
+    }
+    
+    
+    // Follow player logic
+    updateFollowPlayer() {
+        if (!this.followingPlayer || !this.players.has(this.followingPlayer)) {
+            this.followingPlayer = null;
+            return;
+        }
+        
+        if (!this.myPlayerId || !this.players.has(this.myPlayerId)) return;
+        
+        const myPlayer = this.players.get(this.myPlayerId);
+        const targetPlayer = this.players.get(this.followingPlayer);
+        
+        const distance = Math.sqrt(
+            (targetPlayer.x - myPlayer.x) ** 2 + 
+            (targetPlayer.y - myPlayer.y) ** 2
+        );
+        
+        if (distance < 50) {
+            // Close enough, stop following
+            this.followingPlayer = null;
+            this.sendStopCommand();
+            return;
+        }
+        
+        // Calculate direction to follow
+        const dx = targetPlayer.x - myPlayer.x;
+        const dy = targetPlayer.y - myPlayer.y;
+        
+        let direction = null;
+        if (Math.abs(dx) > Math.abs(dy)) {
+            direction = dx > 0 ? 'right' : 'left';
+        } else {
+            direction = dy > 0 ? 'down' : 'up';
+        }
+        
+        this.sendMoveCommand(direction);
+    }
+    
+    // Particle system
+    addParticle(x, y) {
+        if (!this.settings.showParticles) return;
+        
+        this.particles.push({
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 2,
+            vy: (Math.random() - 0.5) * 2,
+            life: 30,
+            maxLife: 30
+        });
+    }
+    
+    updateParticles() {
+        this.particles = this.particles.filter(particle => {
+            particle.x += particle.vx;
+            particle.y += particle.vy;
+            particle.life--;
+            return particle.life > 0;
+        });
+    }
+    
+    drawParticles() {
+        if (!this.settings.showParticles) return;
+        
+        this.ctx.save();
+        this.ctx.globalAlpha = 0.7;
+        
+        for (const particle of this.particles) {
+            const alpha = particle.life / particle.maxLife;
+            this.ctx.globalAlpha = alpha * 0.7;
+            this.ctx.fillStyle = '#00ff00';
+            this.ctx.fillRect(particle.x - this.viewport.offsetX, particle.y - this.viewport.offsetY, 2, 2);
+        }
+        
+        this.ctx.restore();
+    }
+    
+    // Mini-map
+    drawMiniMap() {
+        if (!this.settings.showMiniMap) return;
+        
+        const margin = 10;
+        const mapX = this.canvas.width - this.miniMapSize - margin;
+        const mapY = margin;
+        
+        // Mini-map background
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        this.ctx.fillRect(mapX, mapY, this.miniMapSize, this.miniMapSize);
+        this.ctx.strokeStyle = 'white';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(mapX, mapY, this.miniMapSize, this.miniMapSize);
+        
+        // Scale factor for mini-map
+        const scale = this.miniMapSize / this.worldSize;
+        
+        // Draw all players on mini-map
+        for (const [playerId, player] of this.players) {
+            const mapPlayerX = mapX + player.x * scale;
+            const mapPlayerY = mapY + player.y * scale;
+            
+            if (playerId === this.myPlayerId) {
+                // My player - green
+                this.ctx.fillStyle = '#00ff00';
+                this.ctx.fillRect(mapPlayerX - 2, mapPlayerY - 2, 4, 4);
+            } else {
+                // Other players - white
+                this.ctx.fillStyle = 'white';
+                this.ctx.fillRect(mapPlayerX - 1, mapPlayerY - 1, 2, 2);
+            }
+        }
+        
+        // Draw viewport rectangle
+        this.ctx.strokeStyle = '#00ff00';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(
+            mapX + this.viewport.offsetX * scale,
+            mapY + this.viewport.offsetY * scale,
+            this.viewport.width * scale,
+            this.viewport.height * scale
+        );
+    }
+    
+    // Settings panel
+    drawSettings() {
+        if (!this.showSettings) return;
+        
+        const panelWidth = 300;
+        const panelHeight = 400;
+        const x = (this.canvas.width - panelWidth) / 2;
+        const y = (this.canvas.height - panelHeight) / 2;
+        
+        // Background
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.9)';
+        this.ctx.fillRect(x, y, panelWidth, panelHeight);
+        this.ctx.strokeStyle = 'white';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(x, y, panelWidth, panelHeight);
+        
+        // Title
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = '20px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('Settings', x + panelWidth / 2, y + 30);
+        
+        // Settings options
+        this.ctx.font = '14px Arial';
+        this.ctx.textAlign = 'left';
+        
+        let yPos = y + 60;
+        const lineHeight = 25;
+        
+        // Mini-map toggle
+        this.ctx.fillText(`Mini-map: ${this.settings.showMiniMap ? 'ON' : 'OFF'}`, x + 20, yPos);
+        yPos += lineHeight;
+        
+        // Particles toggle
+        this.ctx.fillText(`Particles: ${this.settings.showParticles ? 'ON' : 'OFF'}`, x + 20, yPos);
+        yPos += lineHeight;
+        
+        // Statistics
+        yPos += 20;
+        this.ctx.fillText('Statistics:', x + 20, yPos);
+        yPos += lineHeight;
+        
+        const playTime = Math.floor((Date.now() - this.stats.startTime) / 1000);
+        this.ctx.fillText(`Play Time: ${playTime}s`, x + 20, yPos);
+        yPos += lineHeight;
+        
+        this.ctx.fillText(`Distance: ${Math.round(this.stats.distanceTraveled)}px`, x + 20, yPos);
+        yPos += lineHeight;
+        
+        this.ctx.fillText(`Players Online: ${this.players.size}`, x + 20, yPos);
+        
+        // Instructions
+        yPos += 40;
+        this.ctx.fillText('Press S to close', x + 20, yPos);
+    }
+    
+    // Player list
+    drawPlayerList() {
+        if (!this.showPlayerList) return;
+        
+        const panelWidth = 250;
+        const panelHeight = Math.min(400, 50 + this.players.size * 30);
+        const x = (this.canvas.width - panelWidth) / 2;
+        const y = (this.canvas.height - panelHeight) / 2;
+        
+        // Background
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.9)';
+        this.ctx.fillRect(x, y, panelWidth, panelHeight);
+        this.ctx.strokeStyle = 'white';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(x, y, panelWidth, panelHeight);
+        
+        // Title
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = '18px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('Online Players', x + panelWidth / 2, y + 25);
+        
+        // Player list
+        this.ctx.font = '12px Arial';
+        this.ctx.textAlign = 'left';
+        
+        let yPos = y + 50;
+        for (const [playerId, player] of this.players) {
+            const isMe = playerId === this.myPlayerId;
+            this.ctx.fillStyle = isMe ? '#00ff00' : 'white';
+            this.ctx.fillText(
+                `${player.username} (${Math.round(player.x)}, ${Math.round(player.y)})`,
+                x + 10,
+                yPos
+            );
+            yPos += 20;
+        }
+        
+        // Instructions
+        this.ctx.fillStyle = 'white';
+        this.ctx.fillText('Press P to close', x + 10, y + panelHeight - 20);
+    }
+    
+    // Update statistics
+    updateStats() {
+        if (!this.myPlayerId || !this.players.has(this.myPlayerId)) return;
+        
+        const myPlayer = this.players.get(this.myPlayerId);
+        if (this.lastPlayerPosition) {
+            const distance = Math.sqrt(
+                (myPlayer.x - this.lastPlayerPosition.x) ** 2 + 
+                (myPlayer.y - this.lastPlayerPosition.y) ** 2
+            );
+            this.stats.distanceTraveled += distance;
+            
+            // Add particles when moving
+            if (distance > 0) {
+                this.addParticle(myPlayer.x, myPlayer.y);
+            }
+        }
+        this.lastPlayerPosition = { x: myPlayer.x, y: myPlayer.y };
+    }
+    
+    // Draw hover info for players
+    drawHoverInfo(player) {
+        if (!player) return;
+        
+        const screenX = player.x - this.viewport.offsetX;
+        const screenY = player.y - this.viewport.offsetY;
+        
+        // Tooltip background
+        const tooltipWidth = 150;
+        const tooltipHeight = 60;
+        const tooltipX = screenX - tooltipWidth / 2;
+        const tooltipY = screenY - 100;
+        
+        this.ctx.save();
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        this.ctx.fillRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+        this.ctx.strokeStyle = 'white';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+        
+        // Tooltip text
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = '12px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText(player.username, screenX, tooltipY + 20);
+        this.ctx.fillText(`Position: (${Math.round(player.x)}, ${Math.round(player.y)})`, screenX, tooltipY + 35);
+        this.ctx.fillText(`Facing: ${player.facing}`, screenX, tooltipY + 50);
+        
+        this.ctx.restore();
+    }
+    
+    // Game loop updates
+    update() {
+        // Update follow player
+        this.updateFollowPlayer();
+        
+        // Update particles
+        this.updateParticles();
+        
+        // Update statistics
+        this.updateStats();
+        
+        // Re-render
+        this.render();
     }
 }
 
